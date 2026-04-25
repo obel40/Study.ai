@@ -1,0 +1,5 @@
+[
+  { "name": "Government",   "terms": "terms.txt",  "def": "def.txt"  },
+  { "name": "Court Cases",  "terms": "terms2.txt", "def": "def2.txt" },
+  { "name": "Set 3",         "terms": "terms3.txt", "def": "def3.txt" }
+]

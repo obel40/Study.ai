@@ -84,6 +84,44 @@
   .pill:active { transform: translateY(0); }
   .pill.active { background: var(--accent); border-color: var(--accent); }
 
+  .set-picker { position: relative; }
+  .set-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    min-width: 200px;
+    background: rgba(20, 18, 40, 0.95);
+    backdrop-filter: blur(14px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 14px;
+    padding: 6px;
+    box-shadow: 0 20px 50px -10px rgba(0, 0, 0, 0.6);
+    display: none;
+    flex-direction: column;
+    gap: 2px;
+    z-index: 30;
+  }
+  .set-menu.open { display: flex; }
+  .set-menu button {
+    background: transparent;
+    border: none;
+    color: var(--text);
+    text-align: left;
+    padding: 9px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+    font-size: 0.88rem;
+    font-family: inherit;
+    transition: background 0.15s;
+  }
+  .set-menu button:hover { background: rgba(255, 255, 255, 0.08); }
+  .set-menu button.current { background: var(--accent); }
+  .set-menu .sep {
+    height: 1px;
+    background: rgba(255,255,255,0.08);
+    margin: 4px 2px;
+  }
+
   .progress-wrap {
     height: 4px;
     background: rgba(255, 255, 255, 0.08);
@@ -292,6 +330,10 @@
     <div class="header">
       <div class="title">Flashcards</div>
       <div class="controls">
+        <div class="set-picker">
+          <button class="pill" id="setBtn" title="Switch set">📚 <span id="setLabel">Set</span> ▾</button>
+          <div class="set-menu" id="setMenu"></div>
+        </div>
         <button class="pill" id="shuffleBtn" title="Random order">🔀 Shuffle</button>
         <button class="pill" id="reviewBtn" title="Review skipped">↺ Skipped <span class="badge" id="skipCount">0</span></button>
       </div>
@@ -318,6 +360,12 @@
   const xBtn = document.getElementById('xBtn');
   const checkBtn = document.getElementById('checkBtn');
   const toast = document.getElementById('toast');
+  const setBtn = document.getElementById('setBtn');
+  const setMenu = document.getElementById('setMenu');
+  const setLabel = document.getElementById('setLabel');
+
+  let sets = [];           // [{name, terms, def}]
+  let currentSetIndex = 0;
 
   let cards = [];        // [{term, def}]
   let queue = [];        // indices into cards still to show this round
@@ -338,26 +386,64 @@
     return text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
   }
 
-  async function loadData() {
+  async function loadSetsManifest() {
+    try {
+      const res = await fetch('sets.json');
+      if (!res.ok) throw new Error('no manifest');
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        sets = data;
+        return;
+      }
+    } catch (e) { /* fall through */ }
+    sets = [{ name: 'Default', terms: 'terms.txt', def: 'def.txt' }];
+  }
+
+  async function loadSet(index) {
+    const set = sets[index];
+    if (!set) return false;
     try {
       const [t, d] = await Promise.all([
-        fetch('terms.txt').then(r => r.text()),
-        fetch('def.txt').then(r => r.text()),
+        fetch(set.terms).then(r => r.text()),
+        fetch(set.def).then(r => r.text()),
       ]);
       const terms = parseLines(t);
       const defs = parseLines(d);
       const n = Math.min(terms.length, defs.length);
       cards = [];
       for (let i = 0; i < n; i++) cards.push({ term: terms[i], def: defs[i] });
+      currentSetIndex = index;
+      setLabel.textContent = set.name;
+      try { localStorage.setItem('flashcards.set', String(index)); } catch (e) {}
       if (terms.length !== defs.length) {
-        showToast(`⚠ ${terms.length} terms vs ${defs.length} defs — using ${n}`);
+        showToast(`⚠ ${set.name}: ${terms.length} terms vs ${defs.length} defs — using ${n}`);
       }
+      return true;
     } catch (e) {
       cards = [];
-      renderEmpty(`Couldn't load terms.txt / def.txt.<br/>Serve this folder over HTTP (e.g. <code>python -m http.server</code>) and reload.`);
+      renderEmpty(`Couldn't load <b>${set.name}</b> (${set.terms} / ${set.def}).<br/>Serve this folder over HTTP and reload.`);
       return false;
     }
-    return true;
+  }
+
+  function renderSetMenu() {
+    setMenu.innerHTML = '';
+    sets.forEach((s, i) => {
+      const b = document.createElement('button');
+      b.textContent = s.name;
+      if (i === currentSetIndex) b.classList.add('current');
+      b.onclick = async () => {
+        setMenu.classList.remove('open');
+        if (i === currentSetIndex) return;
+        const ok = await loadSet(i);
+        renderSetMenu();
+        if (ok && cards.length > 0) {
+          showToast(`Switched to ${sets[i].name}`);
+          startRound(cards.map((_, j) => j));
+        }
+      };
+      setMenu.appendChild(b);
+    });
   }
 
   function startRound(indices) {
@@ -505,6 +591,16 @@
   }
 
   // Wire up controls
+  setBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setMenu.classList.toggle('open');
+  });
+  document.addEventListener('click', (e) => {
+    if (!setMenu.contains(e.target) && e.target !== setBtn) {
+      setMenu.classList.remove('open');
+    }
+  });
+
   shuffleBtn.addEventListener('click', () => {
     if (cards.length === 0) return;
     mode = 'all';
@@ -528,11 +624,18 @@
 
   // Init
   (async () => {
-    const ok = await loadData();
+    await loadSetsManifest();
+    let initial = 0;
+    try {
+      const saved = parseInt(localStorage.getItem('flashcards.set') || '0', 10);
+      if (!isNaN(saved) && saved >= 0 && saved < sets.length) initial = saved;
+    } catch (e) {}
+    const ok = await loadSet(initial);
+    renderSetMenu();
     if (ok && cards.length > 0) {
       startRound(cards.map((_, i) => i));
     } else if (ok) {
-      renderEmpty('terms.txt and def.txt are empty. Add lines and reload.');
+      renderEmpty(`<b>${sets[currentSetIndex].name}</b> is empty. Add lines to ${sets[currentSetIndex].terms} / ${sets[currentSetIndex].def} and reload.`);
     }
   })();
 </script>
